@@ -156,10 +156,18 @@ static int run_function(IRList *list, const char *name, int argc, int *argv) {
     IRInst *ip = entry->next;
 
     int pidx = 0;
-    while (ip && ip != end && ip->op == IR_PARAM_STORE) {
-        if (pidx < argc)
-            set_scalar(ip->var_name, argv[pidx++]);
-        ip = ip->next;
+    while (ip && ip != end) {
+        if (ip->op == IR_PARAM_STORE) {
+            if (pidx < argc)
+                set_scalar(ip->var_name, argv[pidx++]);
+            ip = ip->next;
+        } else if (ip->op == IR_CHAR_DECL ||
+                   ip->op == IR_STRING_DECL ||
+                   ip->op == IR_ARRAY_DECL) {
+            ip = ip->next;
+        } else {
+            break;
+        }
     }
 
     int ret = 0;

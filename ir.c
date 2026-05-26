@@ -552,27 +552,35 @@ void ir_generate(IRList *list, ASTNode *node) {
             break;
         }
         case AST_FUNCTION: {
-            ir_emit_label(list, node->function.name);
+            IRInst *flab = ir_inst_new();
+            flab->op = IR_LABEL;
+            flab->label = strdup(node->function.name);
+            flab->value = node->function.return_type;
+            ir_list_append(list, flab);
             ASTList *param = node->function.params;
             int pidx = 0;
             while (param) {
                 int ptype = param->stmt->decl.var_type;
-                if (ptype == TOKEN_CHAR) {
-                    sym_register(param->stmt->decl.var_name, SYM_CHAR, 0);
-                    IRInst *cd = ir_inst_new();
-                    cd->op = IR_CHAR_DECL;
-                    cd->var_name = strdup(param->stmt->decl.var_name);
-                    ir_list_append(list, cd);
-                } else if (ptype == TOKEN_STRING) {
-                    sym_register(param->stmt->decl.var_name, SYM_STRING, 0);
-                } else {
-                    sym_register(param->stmt->decl.var_name, SYM_SCALAR, 0);
-                }
+                const char *pname = param->stmt->decl.var_name;
+                if (ptype == TOKEN_CHAR)
+                    sym_register(pname, SYM_CHAR, 0);
+                else if (ptype == TOKEN_STRING)
+                    sym_register(pname, SYM_STRING, 0);
+                else
+                    sym_register(pname, SYM_SCALAR, 0);
                 IRInst *ps = ir_inst_new();
                 ps->op = IR_PARAM_STORE;
-                ps->var_name = strdup(param->stmt->decl.var_name);
-                ps->value = pidx++;
+                ps->var_name = strdup(pname);
+                ps->value = pidx;
+                ps->src2 = ptype;
                 ir_list_append(list, ps);
+                pidx++;
+                if (ptype == TOKEN_CHAR) {
+                    IRInst *cd = ir_inst_new();
+                    cd->op = IR_CHAR_DECL;
+                    cd->var_name = strdup(pname);
+                    ir_list_append(list, cd);
+                }
                 param = param->next;
             }
             ir_generate(list, node->function.body);

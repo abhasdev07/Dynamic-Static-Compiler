@@ -1,10 +1,12 @@
 #include "codegen_llvm.h"
+#include "lexer.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define MAX_VARS 256
 #define MAX_STRLITS 128
+#define MAX_FUNCS 64
 
 typedef struct {
     char name[64];
@@ -29,8 +31,67 @@ static StrLit str_lits[MAX_STRLITS];
 static int str_lit_count;
 static int cmp_id;
 
+typedef struct {
+    char name[64];
+    int ret_char;
+    int nparams;
+    int param_char[16];
+} FuncSig;
+
+static FuncSig func_sigs[MAX_FUNCS];
+static int func_sig_count;
+static int current_func_ret_char;
+static int pending_args[16];
+static int pending_arg_count;
+
 static int is_function_label(const char *label) {
     return label && strchr(label, '_') == NULL;
+}
+
+static FuncSig *lookup_func_sig(const char *name) {
+    for (int i = 0; i < func_sig_count; i++)
+        if (strcmp(func_sigs[i].name, name) == 0)
+            return &func_sigs[i];
+    return NULL;
+}
+
+static void register_func_sig(IRInst *label_inst, IRInst *body, IRInst *end) {
+    if (func_sig_count >= MAX_FUNCS)
+        return;
+    FuncSig *f = &func_sigs[func_sig_count++];
+    strncpy(f->name, label_inst->label, 63);
+    f->name[63] = '\0';
+    f->ret_char = (label_inst->value == TOKEN_CHAR);
+    f->nparams = 0;
+    for (IRInst *i = body; i && i != end; i = i->next) {
+        if (i->op == IR_PARAM_STORE) {
+            if (f->nparams < 16)
+                f->param_char[f->nparams++] = (i->src2 == TOKEN_CHAR);
+        } else if (i->op == IR_CHAR_DECL ||
+                   i->op == IR_STRING_DECL ||
+                   i->op == IR_ARRAY_DECL) {
+            continue;
+        } else {
+            break;
+        }
+    }
+}
+
+static void scan_all_function_sigs(IRList *ir) {
+    func_sig_count = 0;
+    for (IRInst *inst = ir->head; inst; inst = inst->next) {
+        if (inst->op != IR_LABEL || !is_function_label(inst->label))
+            continue;
+        IRInst *body = inst->next;
+        IRInst *end = NULL;
+        for (IRInst *s = body; s; s = s->next) {
+            if (s->op == IR_LABEL && is_function_label(s->label)) {
+                end = s;
+                break;
+            }
+        }
+        register_func_sig(inst, body, end);
+    }
 }
 
 static VarInfo *find_var(const char *name) {
@@ -117,8 +178,10 @@ static void scan_symbols_range(IRInst *start, IRInst *end) {
             register_var(inst->var_name, 0, 1, 0, 0, 0);
         if (inst->op == IR_CHAR_DECL)
             register_var(inst->var_name, 0, 0, 1, 0, 0);
-        if (inst->op == IR_PARAM_STORE || inst->op == IR_STORE_VAR ||
-            inst->op == IR_LOAD_VAR)
+        if (inst->op == IR_PARAM_STORE)
+            register_var(inst->var_name, 0, 0,
+                         inst->src2 == TOKEN_CHAR, 0, 0);
+        if (inst->op == IR_STORE_VAR || inst->op == IR_LOAD_VAR)
             register_var(inst->var_name, 0, 0, 0, 0, 0);
         if (inst->op == IR_ARRAY_LOAD || inst->op == IR_ARRAY_STORE ||
             inst->op == IR_CHAR_LOAD || inst->op == IR_CHAR_STORE)
@@ -462,14 +525,13 @@ static void emit_instruction(FILE *out, IRInst *inst) {
 
     case IR_PARAM_STORE: {
         VarInfo *v = find_var(inst->var_name);
+        if (!v)
+            v = register_var(inst->var_name, 0, 0,
+                             inst->src2 == TOKEN_CHAR, 0, 0);
         if (v && v->is_char) {
             fprintf(out,
-                "  %%psc%d = trunc i32 %%p%d to i8\n",
-                cmp_id, inst->value);
-            fprintf(out,
-                "  store i8 %%psc%d, i8* %%%s, align 1\n",
-                cmp_id, inst->var_name);
-            cmp_id++;
+                "  store i8 %%p%d, i8* %%%s, align 1\n",
+                inst->value, inst->var_name);
         } else {
             fprintf(out,
                 "  store i32 %%p%d, i32* %%%s, align 4\n",
@@ -479,7 +541,16 @@ static void emit_instruction(FILE *out, IRInst *inst) {
     }
 
     case IR_RETURN:
-        fprintf(out, "  ret i32 %%v%d\n", inst->src1);
+        if (current_func_ret_char) {
+            fprintf(out,
+                "  %%retc%d = trunc i32 %%v%d to i8\n",
+                cmp_id, inst->src1);
+            fprintf(out,
+                "  ret i8 %%retc%d\n", cmp_id);
+            cmp_id++;
+        } else {
+            fprintf(out, "  ret i32 %%v%d\n", inst->src1);
+        }
         break;
 
     case IR_CAST_I2F:
@@ -516,9 +587,53 @@ static void emit_instruction(FILE *out, IRInst *inst) {
     case IR_ARRAY_DECL:
     case IR_STRING_CONST:
     case IR_CHAR_STORE:
-    case IR_ARG:
-    case IR_CALL:
         break;
+
+    case IR_ARG:
+        if (pending_arg_count < 16)
+            pending_args[pending_arg_count++] = inst->src1;
+        break;
+
+    case IR_CALL: {
+        FuncSig *f = lookup_func_sig(inst->label);
+        int ret_char = f && f->ret_char;
+        int n = pending_arg_count;
+        int base = cmp_id;
+
+        for (int i = 0; i < n; i++) {
+            if (f && i < f->nparams && f->param_char[i])
+                fprintf(out,
+                    "  %%ac%d = trunc i32 %%v%d to i8\n",
+                    base + i, pending_args[i]);
+        }
+
+        if (ret_char)
+            fprintf(out, "  %%callr%d = ", base);
+        else
+            fprintf(out, "  %%v%d = ", inst->dest);
+
+        fprintf(out, "call %s @%s(",
+                ret_char ? "i8" : "i32", inst->label);
+
+        for (int i = 0; i < n; i++) {
+            if (f && i < f->nparams && f->param_char[i])
+                fprintf(out, "i8 %%ac%d", base + i);
+            else
+                fprintf(out, "i32 %%v%d", pending_args[i]);
+            if (i + 1 < n)
+                fprintf(out, ", ");
+        }
+        fprintf(out, ")\n");
+
+        if (ret_char)
+            fprintf(out,
+                "  %%v%d = zext i8 %%callr%d to i32\n",
+                inst->dest, base);
+
+        cmp_id = base + (n > 0 ? n : 1) + 1;
+        pending_arg_count = 0;
+        break;
+    }
 
     default:
         break;
@@ -527,8 +642,16 @@ static void emit_instruction(FILE *out, IRInst *inst) {
 
 static int count_function_params(IRInst *start) {
     int n = 0;
-    for (IRInst *i = start->next; i && i->op == IR_PARAM_STORE; i = i->next)
-        n++;
+    for (IRInst *i = start->next; i; i = i->next) {
+        if (i->op == IR_PARAM_STORE)
+            n++;
+        else if (i->op == IR_CHAR_DECL ||
+                 i->op == IR_STRING_DECL ||
+                 i->op == IR_ARRAY_DECL)
+            continue;
+        else
+            break;
+    }
     return n;
 }
 
@@ -538,7 +661,9 @@ static void emit_function(FILE *out, IRInst **cursor) {
         return;
 
     const char *name = inst->label;
+    FuncSig *fs = lookup_func_sig(name);
     int nparams = count_function_params(inst);
+    int ret_char = fs && fs->ret_char;
     IRInst *body = inst->next;
     IRInst *end = NULL;
 
@@ -553,9 +678,17 @@ static void emit_function(FILE *out, IRInst **cursor) {
     str_lit_count = 0;
     scan_symbols_range(body, end);
 
-    fprintf(out, "define i32 @%s(", name);
-    for (int i = 0; i < nparams; i++)
-        fprintf(out, "i32 %%p%d%s", i, (i + 1 < nparams) ? ", " : "");
+    current_func_ret_char = ret_char;
+    pending_arg_count = 0;
+
+    fprintf(out, "define %s @%s(",
+            ret_char ? "i8" : "i32", name);
+    for (int i = 0; i < nparams; i++) {
+        int pchar = fs && i < fs->nparams && fs->param_char[i];
+        fprintf(out, "%s %%p%d%s",
+                pchar ? "i8" : "i32",
+                i, (i + 1 < nparams) ? ", " : "");
+    }
     fprintf(out, ") {\nentry:\n");
 
     for (int i = 0; i < var_count; i++)
@@ -573,7 +706,7 @@ static void emit_function(FILE *out, IRInst **cursor) {
 
     *cursor = end;
     if (!returned)
-        fprintf(out, "  ret i32 0\n");
+        fprintf(out, "  ret %s 0\n", ret_char ? "i8" : "i32");
     fprintf(out, "}\n\n");
 }
 
@@ -581,6 +714,8 @@ void codegen_llvm_emit(IRList *ir, FILE *out) {
     cmp_id = 0;
     str_lit_count = 0;
     var_count = 0;
+
+    scan_all_function_sigs(ir);
 
     emit_header(out);
 
