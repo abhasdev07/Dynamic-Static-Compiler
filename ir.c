@@ -7,6 +7,7 @@
 #define SYM_SCALAR 0
 #define SYM_ARRAY  1
 #define SYM_STRING 2
+#define SYM_CHAR   3
 
 typedef struct {
     char name[64];
@@ -38,6 +39,14 @@ static int sym_kind(const char *name) {
         if (strcmp(symtab[i].name, name) == 0)
             return symtab[i].kind;
     return SYM_SCALAR;
+}
+
+static int sym_is_char(const char *name) {
+    return sym_kind(name) == SYM_CHAR;
+}
+
+static int sym_is_string(const char *name) {
+    return sym_kind(name) == SYM_STRING;
 }
 
 static int ir_const_value(IRList *list, int temp) {
@@ -78,7 +87,6 @@ int ir_emit_const(IRList *list, int value) {
     ir_list_append(list, inst);
     return inst->dest;
 }
-
 int ir_emit_fconst(IRList *list, float value) {
     IRInst *inst = ir_inst_new();
     inst->op = IR_FLOAD_CONST;
@@ -386,6 +394,12 @@ void ir_generate(IRList *list, ASTNode *node) {
                 sd->op = IR_STRING_DECL;
                 sd->var_name = strdup(node->decl.var_name);
                 ir_list_append(list, sd);
+            } else if (node->decl.var_type == TOKEN_CHAR) {
+                sym_register(node->decl.var_name, SYM_CHAR, 0);
+                IRInst *cd = ir_inst_new();
+                cd->op = IR_CHAR_DECL;
+                cd->var_name = strdup(node->decl.var_name);
+                ir_list_append(list, cd);
             } else {
                 sym_register(node->decl.var_name, SYM_SCALAR, 0);
             }
@@ -502,14 +516,20 @@ void ir_generate(IRList *list, ASTNode *node) {
                     inst->var_name = strdup(expr->string_value);
                     ir_list_append(list, inst);
                 } else if (expr->type == AST_VAR &&
-                           sym_kind(expr->var_name) == SYM_STRING) {
-                    int ptr = ir_emit_load_var(list, expr->var_name);
+                           sym_is_string(expr->var_name)) {
                     IRInst *inst = ir_inst_new();
                     inst->op = IR_PRINT_STRING_PTR;
-                    inst->src1 = ptr;
+                    inst->var_name = strdup(expr->var_name);
+                    ir_list_append(list, inst);
+                } else if (expr->type == AST_VAR &&
+                           sym_is_char(expr->var_name)) {
+                    int ch = ir_emit_load_var(list, expr->var_name);
+                    IRInst *inst = ir_inst_new();
+                    inst->op = IR_PRINT_CHAR;
+                    inst->src1 = ch;
                     ir_list_append(list, inst);
                 } else if (expr->type == AST_ARRAY_ACCESS &&
-                           sym_kind(expr->array_access.array_name) == SYM_STRING) {
+                           sym_is_string(expr->array_access.array_name)) {
                     int ch = ir_generate_expr(list, expr);
                     IRInst *inst = ir_inst_new();
                     inst->op = IR_PRINT_CHAR;
@@ -536,7 +556,18 @@ void ir_generate(IRList *list, ASTNode *node) {
             ASTList *param = node->function.params;
             int pidx = 0;
             while (param) {
-                sym_register(param->stmt->decl.var_name, SYM_SCALAR, 0);
+                int ptype = param->stmt->decl.var_type;
+                if (ptype == TOKEN_CHAR) {
+                    sym_register(param->stmt->decl.var_name, SYM_CHAR, 0);
+                    IRInst *cd = ir_inst_new();
+                    cd->op = IR_CHAR_DECL;
+                    cd->var_name = strdup(param->stmt->decl.var_name);
+                    ir_list_append(list, cd);
+                } else if (ptype == TOKEN_STRING) {
+                    sym_register(param->stmt->decl.var_name, SYM_STRING, 0);
+                } else {
+                    sym_register(param->stmt->decl.var_name, SYM_SCALAR, 0);
+                }
                 IRInst *ps = ir_inst_new();
                 ps->op = IR_PARAM_STORE;
                 ps->var_name = strdup(param->stmt->decl.var_name);
@@ -645,6 +676,9 @@ void ir_print(IRList *list) {
             case IR_STRING_DECL:
                 printf("string_decl %s\n", inst->var_name); break;
 
+            case IR_CHAR_DECL:
+                printf("char_decl %s\n", inst->var_name); break;
+
             case IR_STRING_INIT:
                 printf("string_init %s = \"%s\"\n", inst->var_name, inst->label); break;
 
@@ -677,7 +711,7 @@ void ir_print(IRList *list) {
                 printf("print \"%s\"\n", inst->var_name); break;
 
             case IR_PRINT_STRING_PTR:
-                printf("print_string_ptr t%d\n", inst->src1); break;
+                printf("print_string %s\n", inst->var_name); break;
 
             case IR_PRINT_CHAR:
                 printf("print_char t%d\n", inst->src1); break;

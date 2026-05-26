@@ -1,8 +1,95 @@
-int main()
-{
-    int x=90;
-    x++;
-    x=x+10;
-    print(x);
+int add(int a, int b) {
+    return a + b;
+}
+
+int main() {
+
+    int x = 10;
+    int y = 20;
+
+    int z = add(x, y);
+
+    print(z);
+
+    if (z > 20) {
+        print(111);
+    } else {
+        print(222);
+    }
+
+    char ch = 'A';
+
+    print(ch);
+
+    ch++;
+
+    print(ch);
+
+    ch = ch + 2;
+
+    print(ch);
+
+    if (ch > 'B') {
+        print(333);
+    } else {
+        print(444);
+    }
+
+    string msg = "Hello";
+
+    print(msg);
+
+    print(msg[0]);
+    print(msg[1]);
+    print(msg[4]);
+
+    string compiler = "Compiler";
+
+    print(compiler);
+
+    print(compiler[0]);
+    print(compiler[3]);
+
+    int arr[5];
+
+    arr[0] = 5;
+    arr[1] = 10;
+    arr[2] = 15;
+    arr[3] = arr[0] + arr[1];
+    arr[4] = arr[2] * 2;
+
+    print(arr[3]);
+    print(arr[4]);
+
+    int i = 0;
+
+    while (i < 5) {
+
+        print(arr[i]);
+
+        i++;
+    }
+
+    for (int j = 0; j < 3; j++) {
+
+        if (j == 1) {
+            print(999);
+        } else {
+            print(j);
+        }
+    }
+
+    int fact = 1;
+    int n = 5;
+
+    while (n > 1) {
+
+        fact = fact * n;
+
+        n = n - 1;
+    }
+
+    print(fact);
+
     return 0;
 }

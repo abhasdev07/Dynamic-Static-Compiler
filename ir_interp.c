@@ -349,8 +349,9 @@ static int exec_inst(IRList *list, IRInst *inst) {
         fflush(stdout);
         break;
     case IR_PRINT_STRING_PTR: {
-        /* src1 is temp holding nothing useful; skip */
-        (void)inst;
+        char *s = get_string(inst->var_name);
+        printf("%s\n", s ? s : "");
+        fflush(stdout);
         break;
     }
     case IR_PRINT_CHAR:
@@ -365,6 +366,7 @@ static int exec_inst(IRList *list, IRInst *inst) {
         /* handled by instruction-pointer loop in run_function */
         break;
     case IR_STRING_DECL:
+    case IR_CHAR_DECL:
     case IR_STRING_CONST:
         break;
     default:
